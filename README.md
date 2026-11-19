@@ -1,16 +1,61 @@
-# Prostate Radiomics ML
+# Whole-gland MRI radiomics beyond PI-RADS for clinically significant prostate cancer
 
-Final PI-CAI 1500 radiomics workflow for classifying clinically significant
-prostate cancer (`csPCa`, `ISUP >= 2`) from multiparametric prostate MRI
-radiomics features, clinical variables, and combined tabular models.
+Code for the study *"Incremental value of whole-gland MRI radiomics beyond PI-RADS for clinically
+significant prostate cancer: internal-external validation across three centers"* (manuscript under
+review).
 
-![PI-CAI 1500 workflow](docs/figures/picai1500_workflow.svg)
+The study asks whether radiomic features computed from the **whole prostate gland** on biparametric
+MRI add diagnostic information beyond the radiologist's **PI-RADS** score and routine clinical
+variables (age, PSA, PSA density, prostate volume), and whether any gain holds in a hospital the
+model has not seen. Clinically significant prostate cancer (csPCa) is ISUP grade group ≥ 2.
 
-The repository is now centered on the latest `picai1500_corr` experiment. Older
-experiment configs and SLURM scripts were moved to `archive/` so the default
-tree only exposes the current pipeline.
+![Study methodology: participant flow and analytical workflow](docs/figures/methodology_figure1.png)
 
-## Quick Start
+*Figure 1 of the manuscript. **a** Participant flow of the PI-CAI cohort. **b** Analytical workflow:
+predictors, leakage-safe preparation within training partitions, the two modelling stages, and
+evaluation.*
+
+## Study at a glance
+
+| | |
+|---|---|
+| **Data** | Public PI-CAI training/development set: 1,500 bpMRI examinations, 1,476 patients, 3 centers (RUMC 800, PCNN 350, ZGT 350); 425 csPCa (28.3%) |
+| **Predictors** | Whole-gland PyRadiomics features from T2-weighted, ADC and high-b-value DWI; maximum lesion PI-RADS; age, PSA, PSA density, prostate volume |
+| **Stage 1** | Seven-model benchmark on radiomics without PI-RADS: random forest, gradient boosting, LightGBM, Transformer, CapsNet, Transformer-CapsNet and a pretrained tabular foundation model (TabFM) |
+| **Stage 2** | Random forest, TabFM and penalized logistic regression with five predictor sets: PI-RADS only, PI-RADS + PSA density, PI-RADS + clinical, radiomics + PI-RADS, and the complete model |
+| **Validation** | Patient-grouped five-fold cross-validation; leave-one-center-out (LOCO) retraining; histology-confirmed subset (n = 1,032) |
+| **Evaluation** | AUROC/AUPRC with 5,000 patient-cluster bootstrap resamples and Holm adjustment; calibration by center; operating points at PI-RADS-derived sensitivity targets; partial AUROC; decision curves |
+| **Interpretability** | Selection stability, SHAP and integrated gradients, voxel-wise radiomic maps |
+
+Every fitted step (imputation, feature selection, hyperparameter tuning, calibration, thresholds) is
+learned inside the training partition of each fold.
+
+## Main findings
+
+- PI-RADS plus clinical variables reached an internal AUROC of 0.881 (TabFM). Adding whole-gland
+  radiomics raised it to **0.897** (difference 0.016; 95% CI 0.007 to 0.025), with smaller increments
+  for logistic regression (0.010) and random forest (0.012, not significant).
+- Under LOCO the complete TabFM model reached 0.879, but **no algorithm showed a significant radiomic
+  increment in any withheld center**.
+- At the PI-RADS ≥ 4 sensitivity target, specificity was 0.686 versus 0.688 for PI-RADS, and net
+  benefit did not significantly exceed PI-RADS ≥ 4 between 5% and 30% threshold probability.
+
+Whole-gland radiomics modestly improved internal risk ranking, but the gain was not demonstrated in
+new centers or at clinically relevant operating points; prospective evaluation is needed before use
+in biopsy decisions.
+
+## Data
+
+The imaging data are **not redistributed** here. Download them from their sources:
+
+- PI-CAI public training and development dataset: <https://doi.org/10.5281/zenodo.6624726>
+- PI-CAI labels (including the official marksheet with PI-RADS): <https://github.com/DIAGNijmegen/picai_labels>
+
+`artifacts/` holds the cohort manifest and the source feature tables used by the pipeline.
+
+## Installation
+
+Python 3.11 or later.
 
 ```bash
 python -m venv .venv
@@ -18,45 +63,32 @@ source .venv/bin/activate
 pip install -e ".[extraction,interpretability,dev]"
 ```
 
-For deep tabular models:
+For the deep tabular models:
 
 ```bash
 pip install -e ".[deep]"
 ```
 
-## Current Main Workflow
+TabFM runs on a GPU from a pinned checkpoint (`google/tabfm-1.0.0-pytorch`, Hugging Face revision
+`3ba55df`) and source commit `05f2c8e`; `scripts/hpc/50_revision2_tabfm_gpu.sh` sets up that
+environment.
 
-On SLURM, submit the complete PI-CAI 1500 workflow:
+## Reproducing the analyses
 
-```bash
-./run.sh
-```
+The analyses run as SLURM jobs in `scripts/hpc/`, numbered in execution order. Each entry point below
+submits its jobs with `afterok` dependencies; pass `list` to print the order without submitting.
 
-This submits dependent jobs for:
+| Step | Entry point | Jobs |
+|---|---|---|
+| Stage 1: radiomics, clinical and deep benchmark, reports | `./run.sh` | 10–15 (optional 16–25) |
+| Stage 2: PI-RADS extension, LOCO, sensitivity targets | `scripts/hpc/34_…` to `44_…` | 34–44 |
+| LOCO retraining, PSA-density variants, isotonic calibration, TabFM; deep LOCO and nested model selection | `./run_revision_experiments.sh` (32 and 33 are submitted on their own) | 26–33 |
+| PI-RADS + clinical comparator, logistic regression, corrected LOCO, feature-selection sensitivity, nested selection, voxel-map quantification, decision curves | `./run_revision2_experiments.sh` | 45–55 |
 
-1. Radiomics-only calibrated ML.
-2. Radiomics-only deep tabular models and threshold postprocessing.
-3. Clinical feature preparation.
-4. Clinical-only and radiomics+clinical ML.
-5. Clinical-only, concatenated, and dual-branch deep models.
-6. Final reports, interpretability, and publication tables.
+Outputs are written to `results/` and are ignored by Git. The figure generators are in
+`scripts/analysis/` (for example `build_revision_figures.py` and `build_figure6_R1.py`).
 
-To inspect the job order without submitting:
-
-```bash
-./run.sh list
-```
-
-The core configs live in:
-
-- `configs/experiments/picai1500_corr/`
-- `configs/reports/picai1500_corr/`
-- `scripts/hpc/10_picai1500_*.sh` through `18_picai1500_*.sh`
-
-Generated outputs are written to `results/radiomics/picai1500_corr/` and are
-ignored by Git.
-
-## Useful CLI Commands
+### Command-line interface
 
 ```bash
 prostate-radiomics build-features \
@@ -75,29 +107,33 @@ prostate-radiomics compare \
   --config configs/reports/picai1500_corr/clinical_comparison_thresholded.yaml
 ```
 
-Use `--dry-run` with `extract`, `train-classical`, `train-deep`, and
-`interpret` to print the resolved legacy command without launching the job.
+Add `--dry-run` to `extract`, `train-classical`, `train-deep` or `interpret` to print the resolved
+command without launching it.
 
-## Repository Layout
+## Repository layout
 
 ```text
-configs/                  Current PI-CAI 1500 experiment and report configs
-scripts/hpc/              Current SLURM jobs for the PI-CAI 1500 workflow
-src/prostate_radiomics/   Importable package and unified CLI
-tests/                    Unit and smoke tests with synthetic data
-train/radiomics/          Historical implementation used by the CLI wrappers
-artifacts/                Cohort manifest, source feature tables, model ranking seed
-docs/                     Workflow, metrics, outputs, and HPC notes
-archive/                  Older configs/scripts kept out of the active workflow
-results/                  Generated experiment outputs, ignored by Git
+src/prostate_radiomics/   Importable package and the prostate-radiomics CLI
+train/radiomics/          Model implementations used by the CLI
+configs/                  Experiment and report configurations (PI-CAI 1500)
+scripts/hpc/              SLURM jobs, numbered in execution order
+scripts/analysis/         Statistical analyses, tables and figure generators
+artifacts/                Cohort manifest and source feature tables
+docs/                     Workflow, experiments, metrics, outputs and HPC notes
+tests/                    Unit and smoke tests on synthetic data
+archive/                  Earlier configs and scripts, outside the active workflow
+results/                  Generated outputs (ignored by Git)
 ```
 
-## Default Clinical Metrics
+Further detail: [workflow](docs/workflow.md), [experiments](docs/experiments.md),
+[clinical features](docs/clinical_features.md), [interpretability](docs/interpretability.md),
+[metrics](docs/metrics.md), [outputs](docs/outputs.md) and [HPC](docs/hpc.md).
 
-The reduced report prioritizes AUROC, AUPRC, sensitivity, specificity, balanced
-accuracy, and Brier score. Secondary metrics such as F1, MCC, accuracy, PPV, and
-NPV are still computed but are not the default basis for model comparison.
+## Citation
 
-See `docs/workflow.md`, `docs/experiments.md`, `docs/clinical_features.md`,
-`docs/interpretability.md`, `docs/metrics.md`, `docs/outputs.md`, and
-`docs/hpc.md` for implementation details.
+If you use this code, please cite the repository ([`CITATION.cff`](CITATION.cff)). The citation of
+the article will be added here once it is published.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
